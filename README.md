@@ -1,9 +1,6 @@
 # nanoGPT_test
 this is a project for myself to learn python
 这个可以根据给定的文本生成文风相似的一两句话
-使用code2来进行生成
-
-然后可以开始训练生成，训练次数建议在1w次以上，丢失值控制在1.5以下
 
 
 以下均为个人理解：
@@ -41,3 +38,16 @@ softmax 把分数归一化成概率，然后对 v 加权求和，得到每个位
 前馈神经网络：
 一个简单的两层全连接网络，中间扩大 4 倍维度，用 ReLU 激活，再投影回原维度
 
+nanogpt模块：
+token_embedding：把每个字符的整数索引映射成一个稠密向量
+position_embedding：因为 Transformer 本身不记录顺序，所以需要加上位置编码
+blocks：堆叠 n_layer 个 Transformer 块
+ln_f：最后的层归一化
+lm_head：线性层，把最后的向量映射回词汇表大小的 logits（分数），用于预测下一个字符
+
+使用方法：
+首先创造一个input.txt的文件，这个文件用于储存自己想生成的文章原版
+然后调整训练次数来训练模型（建议在1w以上），观察loss情况（建议结果在1.5以下）
+max_new_tokens=（）续写词语个数
+temperature=（）调整温度，小于1较保守，大于1较开放
+调整 n_embd、n_head、n_layer、block_size 来适应数据和算力
