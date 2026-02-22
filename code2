@@ -83,8 +83,8 @@ class TransformerBlock(nn.Module):
         self.ln2 = nn.LayerNorm(n_embd)
 
     def forward(self, x):
-        x = x + self.sa(self.ln1(x))
-        x = x + self.ffwd(self.ln2(x))
+        x = x + self.sa(self.ln1(x)) # 先层归一化，再注意力，再加残差连接
+        x = x + self.ffwd(self.ln2(x))# 先层归一化，再前馈，再加残差连接
         return x
 
 # ---------- NanoGPT 模型 ----------
