@@ -1,0 +1,155 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+#准备文本
+with open('input.txt','r',encoding='utf-8') as f:
+    text=f.read()
+
+  chars =sorted(list(set(text)))
+  vocab_size=len(chars)
+  stoi={ch:i for i,ch in enumerate(chars)}
+  itos={i:ch for i,ch in enumerate(chars)}
+  encode =lambda s: [stoi[c] for in s]
+  decode =lambda l:''.join([itos[i] for i in l])
+
+  data =torch.tensor(encode(text),deype=torch.long)
+  n=int(0.9*len(data))
+  train_data =data[:n]
+  val_data=data[n:]
+
+  def get_batch(split, batch_size, block_size):
+    data = train_data if split == 'train' else val_data
+    ix = torch.randint(len(data) - block_size, (batch_size,))
+    x = torch.stack([data[i:i+block_size] for i in ix])
+    y = torch.stack([data[i+1:i+block_size+1] for i in ix])
+    return x, y
+
+# ---------- Transformer 组件 ----------
+class Head(nn.Module):
+    def __init__(self, n_embd, head_size, block_size):
+        super().__init__()
+        self.key = nn.Linear(n_embd, head_size, bias=False)
+        self.query = nn.Linear(n_embd, head_size, bias=False)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+        self.dropout = nn.Dropout(0.1)
+
+    def forward(self, x):
+        B, T, C = x.shape
+        k = self.key(x)
+        q = self.query(x)
+        wei = q @ k.transpose(-2, -1) * (C ** -0.5)
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        wei = F.softmax(wei, dim=-1)
+        wei = self.dropout(wei)
+        v = self.value(x)
+        out = wei @ v
+        return out
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, n_embd, n_head, block_size):
+        super().__init__()
+        head_size = n_embd // n_head
+        self.heads = nn.ModuleList([Head(n_embd, head_size, block_size) for _ in range(n_head)])
+        self.proj = nn.Linear(n_embd, n_embd)
+        self.dropout = nn.Dropout(0.1)
+
+    def forward(self, x):
+        out = torch.cat([h(x) for h in self.heads], dim=-1)
+        out = self.proj(out)
+        out = self.dropout(out)
+        return out
+
+class FeedForward(nn.Module):
+    def __init__(self, n_embd):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, 4 * n_embd),
+            nn.ReLU(),
+            nn.Linear(4 * n_embd, n_embd),
+            nn.Dropout(0.1)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+class TransformerBlock(nn.Module):
+    def __init__(self, n_embd, n_head, block_size):
+        super().__init__()
+        self.sa = MultiHeadAttention(n_embd, n_head, block_size)
+        self.ffwd = FeedForward(n_embd)
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
+
+    def forward(self, x):
+        x = x + self.sa(self.ln1(x))
+        x = x + self.ffwd(self.ln2(x))
+        return x
+
+# ---------- NanoGPT 模型 ----------
+class NanoGPT(nn.Module):
+    def __init__(self, vocab_size, n_embd=128, n_head=4, n_layer=3, block_size=128):
+        super().__init__()
+        print(f"初始化NanoGPT: vocab_size={vocab_size}, n_embd={n_embd}, n_head={n_head}, n_layer={n_layer}, block_size={block_size}")
+        self.token_embedding = nn.Embedding(vocab_size, n_embd)
+        self.position_embedding = nn.Embedding(block_size, n_embd)
+        self.blocks = nn.Sequential(*[TransformerBlock(n_embd, n_head, block_size) for _ in range(n_layer)])
+        self.ln_f = nn.LayerNorm(n_embd)
+        self.lm_head = nn.Linear(n_embd, vocab_size)
+        self.block_size = block_size
+
+    def forward(self, idx, targets=None):
+        B, T = idx.shape
+        if T > self.block_size:
+            idx = idx[:, :self.block_size]
+            T = self.block_size
+        tok_emb = self.token_embedding(idx)
+        pos = torch.arange(T, device=idx.device)
+        pos_emb = self.position_embedding(pos)
+        x = tok_emb + pos_emb
+        x = self.blocks(x)
+        x = self.ln_f(x)
+        logits = self.lm_head(x)
+        loss = None
+        if targets is not None:
+            B, T, V = logits.shape
+            logits_flat = logits.view(B*T, V)
+            targets_flat = targets.view(B*T)
+            loss = F.cross_entropy(logits_flat, targets_flat)
+        return logits, loss
+
+# ---------- 生成函数 ----------
+def generate_text(model, context, max_new_tokens=8, temperature=1.0):
+    model.eval()
+    with torch.no_grad():
+        for _ in range(max_new_tokens):
+            if context.shape[1] > model.block_size:
+                context = context[:, -model.block_size:]
+            logits, _ = model(context)
+            logits = logits[:, -1, :] / temperature
+            probs = F.softmax(logits, dim=-1)
+            idx_next = torch.multinomial(probs, num_samples=1)
+            context = torch.cat([context, idx_next], dim=1)
+    return decode(context[0].tolist())
+
+# ---------- 创建模型 ----------
+model = NanoGPT(vocab_size=vocab_size, n_embd=24, n_head=2, n_layer=2, block_size=16)
+print(f"参数量: {sum(p.numel() for p in model.parameters())}")
+
+# ---------- 训练 ----------
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+for step in range(15000):
+    xb, yb = get_batch('train', batch_size=4, block_size=8)
+    logits, loss = model(xb, yb)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+    if step % 1000== 0:
+        print(f"step {step}, loss {loss.item():.4f}")
+
+# ---------- 生成文本 ----------
+prompt = "In the beginning, there was"
+context = torch.tensor([encode(prompt)], dtype=torch.long)
+generated = generate_text(model, context, max_new_tokens=100, temperature=0.8)
+print(f"\n生成文本:\n{generated}")
